@@ -9,6 +9,7 @@ from contextlib import suppress
 import hashlib
 import inspect
 import json
+import logging
 import math
 import os
 from pathlib import Path
@@ -29,11 +30,15 @@ from types import SimpleNamespace
 try:
     from .admission import Admission
     from .model_catalog import accepts_thinking_disable, native_model, supports_adaptive_thinking
-    from .directsdk_setup import INSTALL_HINT, LOGGED_OUT_HINT, _resolve as resolve_claude, apply_config_dir, apply_traffic_policy
+    from .directsdk_setup import INSTALL_HINT, LOGGED_OUT_HINT, _resolve as resolve_claude, advisor_model, apply_config_dir, apply_traffic_policy, telemetry_enabled
 except ImportError:
     from admission import Admission
     from model_catalog import accepts_thinking_disable, native_model, supports_adaptive_thinking
-    from directsdk_setup import INSTALL_HINT, LOGGED_OUT_HINT, _resolve as resolve_claude, apply_config_dir, apply_traffic_policy
+    from directsdk_setup import INSTALL_HINT, LOGGED_OUT_HINT, _resolve as resolve_claude, advisor_model, apply_config_dir, apply_traffic_policy, telemetry_enabled
+
+
+_advisor_without_telemetry_warned = False
+logger = logging.getLogger(__name__)
 
 
 # Hermes picks retry vs fallback from an error's status_code (main loop and auxiliary ladder alike).
@@ -823,6 +828,14 @@ class Client:
                     env['CLAUDE_CODE_MAX_OUTPUT_TOKENS'] = str(parsed['max_tokens'])
                 # The resolved path matters on Windows: CreateProcess finds claude.exe on PATH but not the npm claude.cmd shim.
                 command = resolved + ['-p', '--model', native_model(kwargs['model']), '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--tools', '', '--system-prompt-file', str(root / 'system.md'), '--settings', str(root / 'settings.json'), '--setting-sources', '', '--strict-mcp-config', '--disable-slash-commands', '--max-turns', '1', '--permission-mode', 'dontAsk', '--no-session-persistence', '--mcp-config', json.dumps(mcp)]
+                # An advisor is a main-session extra; Hermes' auxiliary one-shots (titles, summaries) never get one.
+                advisor = advisor_model()
+                if advisor and not request.admission.one_shot:
+                    global _advisor_without_telemetry_warned
+                    if not telemetry_enabled() and not _advisor_without_telemetry_warned:
+                        _advisor_without_telemetry_warned = True
+                        logger.warning("advisor_model is set but claude_code_telemetry is off; Claude Code keeps the advisor off without its feature flags")
+                    command += ['--advisor', advisor]
                 # Native appends a per-turn effort message at its own level (the CLI default unless
                 # --effort is given), which overrides the top-level output_config.effort from the extra body.
                 effort = parsed.get('output_config', {}).get('effort')
@@ -980,6 +993,12 @@ class Client:
                         status = admission.status if isinstance(admission.status, int) and admission.status >= 400 else None
                         raise ClaudeAPIError(f'Incomplete upstream response ({first})' + (': ' + native_error if native_error else ''), status)
                     assistants = [admission.capture.message]
+                    # A paused turn's text is partial: the advisor or server-tool resume needs a follow-up
+                    # upstream request, which the one-request-per-turn relay cannot admit. Fail retryably so
+                    # Hermes retries or falls back instead of taking the partial text as final. This takes
+                    # precedence over native_failure_handled, which would otherwise swallow the denied resume.
+                    if admission.capture.message.get('stop_reason') == 'pause_turn':
+                        raise ClaudeAPIError('Upstream paused the turn (stop_reason pause_turn): the advisor/server-tool turn cannot resume behind the one-request relay', 503)
                     stopped = True
                 native_failure_handled = admission.denied or (admission.used and assistants[0].get('stop_reason') == 'refusal')
                 if native_error and not native_failure_handled:

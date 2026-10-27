@@ -92,6 +92,14 @@ hermes config set plugins.entries.claude-subscription-directsdk-experimental.set
 
 Read on every native spawn, including auth-status and model-discovery probes. Precedence: nonempty per-profile setting after trimming whitespace → nonempty `CLAUDE_SUBSCRIPTION_DIRECTSDK_CONFIG_DIR` → inherited `CLAUDE_CONFIG_DIR` → Claude CLI default. The selected value gets `~` expansion only; the plugin does not check whether the directory exists. An empty or whitespace-only setting falls through. A missing login produces the usual native authentication error. The process environment is never changed.
 
+**Claude Code advisor model** (`advisor_model`, string, empty by default). Pass an advisor to Claude Code as `claude --advisor <value>`, using an alias or model ID:
+
+```sh
+hermes config set plugins.entries.claude-subscription-directsdk-experimental.settings.advisor_model <alias-or-model-id>
+```
+
+Read on every native spawn and trimmed; an empty or whitespace-only setting leaves the advisor off. Advisor usage bills to your plan, and Fable advisor usage bills to usage credits. The advisor needs `claude_code_telemetry` on because Claude Code gates the feature behind its feature flags; with telemetry off Claude Code (not the plugin) keeps the advisor off, and the plugin warns once without changing the telemetry environment. A paused advisor turn (`stop_reason: pause_turn`) fails as a transient error because the relay admits one upstream request per turn. It is not applied to Hermes' auxiliary titles and summaries. Claude Code exits at launch when the advisor and main model pairing is invalid or Fable usage consent is missing. See the [Claude Code advisor documentation](https://code.claude.com/docs/en/advisor).
+
 **Plan limits (`/usage`)** are asked of Claude Code itself (its `get_usage` control request), so they follow this per-profile setting, work with `auth.adopt_external_logins: false`, and the plugin never reads or sends the Claude login. With `claude_code_telemetry` off, Claude Code skips that fetch and `/usage` says so.
 
 **Claude Code telemetry and feature flags** (`claude_code_telemetry`, on by default). Claude Code sends its usage telemetry and fetches feature flags; the flags are what unlock newer and older models in its model picker, so with them off the picker can shrink from every model your account runs to each family's current one (#86). Turn it off to keep Claude Code quiet: the plugin then starts it with `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, `DISABLE_TELEMETRY` and `DISABLE_ERROR_REPORTING` set, and the pinned model table fills in the picker. Change it in the Desktop app under **Capabilities → Plugins**: the settings gear on the `claude-subscription-directsdk-experimental` row opens the switch. Or from the CLI:

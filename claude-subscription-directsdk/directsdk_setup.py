@@ -56,6 +56,7 @@ def _resolve(command, env):
 PLUGIN_ID = "claude-subscription-directsdk-experimental"
 TELEMETRY_SETTING = "claude_code_telemetry"
 CONFIG_DIR_SETTING = "claude_config_dir"
+ADVISOR_SETTING = "advisor_model"
 # Any one of these turns off Claude Code's feature-flag fetch, and with it every model its picker
 # only offers through a flag (#86: 11 models become 5). Off only when the user turns the setting off.
 QUIET_TRAFFIC = {"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "DISABLE_TELEMETRY": "1", "DISABLE_ERROR_REPORTING": "1"}
@@ -94,6 +95,14 @@ def telemetry_enabled():
     if isinstance(value, str):
         return value.strip().lower() not in _OFF
     return value is not False and value != 0
+
+
+def advisor_model():
+    """The active profile's ``advisor_model`` plugin setting, trimmed, or ``None`` when off."""
+    value = _setting(ADVISOR_SETTING)
+    if not isinstance(value, str):
+        return None
+    return value.strip() or None
 
 
 def apply_config_dir(env):

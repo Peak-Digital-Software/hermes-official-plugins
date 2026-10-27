@@ -1,6 +1,6 @@
 name: claude-subscription-directsdk-experimental
 kind: model-provider
-version: 0.3.3
+version: 0.3.4
 manifest_version: 2
 description: Claude Subscription DirectSDK (Experimental) — drive your Claude Pro/Max subscription through the official Claude Code CLI; Hermes owns tools, approvals and compaction
 author: Nous Research
@@ -23,6 +23,13 @@ config_schema:
     default: ""
     label: Claude login config directory
     description: Select this profile's logged-in Claude config directory, overriding process environment directories.
+  advisor_model:
+    type: string
+    default: ""
+    label: Claude Code advisor model
+    description: >-
+      Alias or model ID passed to Claude Code as `claude --advisor`; empty = off. Advisor usage bills
+      to the plan, Fable to usage credits; needs claude_code_telemetry on for feature flags.
   claude_code_telemetry:
     type: bool
     default: true
