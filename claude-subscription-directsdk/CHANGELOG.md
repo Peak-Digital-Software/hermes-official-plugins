@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.4] - Unreleased
+
+### Added
+
+- Per-profile `advisor_model` setting passes an alias or model ID to Claude Code as `--advisor` on native turns, while Hermes' auxiliary titles and summaries stay advisor-free.
+
 ## [0.3.1] - Unreleased
 
 ### Added

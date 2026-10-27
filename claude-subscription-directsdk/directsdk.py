@@ -9,6 +9,7 @@ from contextlib import suppress
 import hashlib
 import inspect
 import json
+import logging
 import math
 import os
 from pathlib import Path
@@ -29,11 +30,15 @@ from types import SimpleNamespace
 try:
     from .admission import Admission
     from .model_catalog import accepts_thinking_disable, native_model, supports_adaptive_thinking
-    from .directsdk_setup import INSTALL_HINT, LOGGED_OUT_HINT, _resolve as resolve_claude, apply_config_dir, apply_traffic_policy
+    from .directsdk_setup import INSTALL_HINT, LOGGED_OUT_HINT, _resolve as resolve_claude, advisor_model, apply_config_dir, apply_traffic_policy, telemetry_enabled
 except ImportError:
     from admission import Admission
     from model_catalog import accepts_thinking_disable, native_model, supports_adaptive_thinking
-    from directsdk_setup import INSTALL_HINT, LOGGED_OUT_HINT, _resolve as resolve_claude, apply_config_dir, apply_traffic_policy
+    from directsdk_setup import INSTALL_HINT, LOGGED_OUT_HINT, _resolve as resolve_claude, advisor_model, apply_config_dir, apply_traffic_policy, telemetry_enabled
+
+
+_advisor_without_telemetry_warned = False
+logger = logging.getLogger(__name__)
 
 
 # Hermes picks retry vs fallback from an error's status_code (main loop and auxiliary ladder alike).
@@ -823,6 +828,15 @@ class Client:
                     env['CLAUDE_CODE_MAX_OUTPUT_TOKENS'] = str(parsed['max_tokens'])
                 # The resolved path matters on Windows: CreateProcess finds claude.exe on PATH but not the npm claude.cmd shim.
                 command = resolved + ['-p', '--model', native_model(kwargs['model']), '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--tools', '', '--system-prompt-file', str(root / 'system.md'), '--settings', str(root / 'settings.json'), '--setting-sources', '', '--strict-mcp-config', '--disable-slash-commands', '--max-turns', '1', '--permission-mode', 'dontAsk', '--no-session-persistence', '--mcp-config', json.dumps(mcp)]
+                # An advisor is a main-session extra; Hermes' auxiliary one-shots (titles, summaries) never get one.
+                advisor = advisor_model()
+                if advisor:
+                    global _advisor_without_telemetry_warned
+                    if not telemetry_enabled() and not _advisor_without_telemetry_warned:
+                        _advisor_without_telemetry_warned = True
+                        logger.warning("advisor_model is set but claude_code_telemetry is off; the advisor stays off without Claude Code's feature flags")
+                    if not request.admission.one_shot:
+                        command += ['--advisor', advisor]
                 # Native appends a per-turn effort message at its own level (the CLI default unless
                 # --effort is given), which overrides the top-level output_config.effort from the extra body.
                 effort = parsed.get('output_config', {}).get('effort')
