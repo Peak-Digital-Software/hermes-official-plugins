@@ -124,6 +124,25 @@ def test_the_setting_is_read_per_spawn_from_the_active_profile(profile, tmp_path
     assert _advisor(second) == "fable"
 
 
+def test_a_hermes_auxiliary_one_shot_with_telemetry_off_never_warns_about_the_advisor(profile, tmp_path, caplog):
+    """A one-shot never gets the advisor, so the telemetry caveat would be noise on titles and summaries."""
+    _set_settings(telemetry=False, advisor="fable")
+    caplog.set_level(logging.WARNING)
+    client = _client(profile, tmp_path, fake=ONE_SHOT_FAKE)
+    try:
+        client.create(model="sonnet", messages=[{"role": "user", "content": "summarize fixture"}],
+                      hermes_auxiliary=True)
+    finally:
+        client.close()
+    messages = [record.getMessage() for record in caplog.records if record.levelno >= logging.WARNING]
+    assert not [message for message in messages
+                if "advisor_model" in message and ("telemetry" in message.lower() or "feature" in message.lower())], messages
+    (argv,) = _argvs(tmp_path)
+    assert "--advisor" not in argv
+    for env in _envs(tmp_path):
+        assert {key: env.get(key) for key in QUIET} == dict.fromkeys(QUIET, "1")
+
+
 def test_an_advisor_with_telemetry_off_warns_once_and_keeps_the_quiet_flags(profile, tmp_path, caplog):
     _set_settings(telemetry=False, advisor="fable")
     caplog.set_level(logging.WARNING)

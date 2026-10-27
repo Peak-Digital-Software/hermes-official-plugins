@@ -18,7 +18,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import directsdk
-from admission import Capture
+from admission import Capture, stream_tool_input
 
 ADVISOR_ID = 'srvtoolu_01AdvisorFixture'
 TOOL_ID = 'toolu_01WritePlan'
@@ -31,6 +31,17 @@ TOOLS = [{'type': 'function', 'function': {
     'parameters': {'type': 'object', 'properties': {'path': {'type': 'string'},
                                                      'content': {'type': 'string'}}}}}]
 
+# The request body native would build behind the relay: an MCP/custom tool (no ``type`` key), the
+# advisor server tool and a declared custom tool. The ordinary tools take streamed arguments; the
+# advisor server tool does not.
+RELAY_TOOLS = [
+    {'name': 'mcp__hermes__read_file', 'description': 'read a file',
+     'input_schema': {'type': 'object', 'properties': {'path': {'type': 'string'}}}},
+    {'type': 'advisor_20260301', 'name': 'advisor', 'model': 'claude-opus-5'},
+    {'type': 'custom', 'name': 'apply_patch', 'description': 'apply a patch',
+     'input_schema': {'type': 'object', 'properties': {'patch': {'type': 'string'}}}},
+]
+ADVISOR_TOOL_INDEX = 1
 USAGE = {'input_tokens': 21, 'cache_read_input_tokens': 4, 'cache_creation_input_tokens': 0,
          'output_tokens': 1}
 ITERATIONS = [
@@ -144,7 +155,10 @@ for line in sys.stdin:
     break
 
 def request(messages):
-    payload = json.dumps({'model': 'sonnet', 'messages': messages}).encode()
+    body = {'model': 'sonnet', 'messages': messages}
+    if os.environ.get('SEND_TOOLS'):
+        body['tools'] = json.loads(os.environ['SEND_TOOLS'])
+    payload = json.dumps(body).encode()
     request = urllib.request.Request(os.environ['ANTHROPIC_BASE_URL'] + '/v1/messages', data=payload,
                                      headers={'Content-Type': 'application/json'})
     return urllib.request.urlopen(request, timeout=5).read().decode()
@@ -222,13 +236,15 @@ def stop_peer(peer, thread):
     peer.server_close()
 
 
-def make_client(tmp_path, peer, resume=False):
+def make_client(tmp_path, peer, resume=False, tools=None):
     script = tmp_path / 'native.py'
     script.write_text(FAKE_NATIVE, encoding='utf-8')
     env = {'PATH': os.defpath, 'HOME': str(tmp_path),
            'ANTHROPIC_BASE_URL': f'http://127.0.0.1:{peer.server_port}'}
     if resume:
         env['RESUME_PAUSE'] = '1'
+    if tools is not None:
+        env['SEND_TOOLS'] = json.dumps(tools)
     return directsdk.Client(command=[sys.executable, str(script)], env=env)
 
 
@@ -255,30 +271,52 @@ def test_advisor_turn_reaches_hermes_with_text_and_its_tool_call(tmp_path):
         stop_peer(peer, thread)
 
 
-def test_paused_advisor_turn_is_one_admitted_request_and_a_resume_is_denied(tmp_path):
-    """A pause_turn response carries a pending server_tool_use and ends the native turn.
+def test_paused_advisor_turn_fails_retryably(tmp_path):
+    """A paused server-tool turn is failed as transient, never handed to Hermes as a final answer.
 
-    directsdk has no pause_turn resume path: it treats the first complete capture as the turn, so the
-    text before the advisor call reaches Hermes with finish_reason ``stop`` and no exception. When the
-    fake native follows the documented resume (append the assistant turn unchanged and ask again), the
-    relay has already consumed its one admission: the second request is answered 400
-    HERMES_MODEL_ADMISSION_CONSUMED, counted in ``blocked_requests``, and never forwarded upstream.
-    That is the current behaviour this test pins; resuming a paused advisor turn would need a
-    production change in directsdk.
+    A ``pause_turn`` response carries a pending server_tool_use, so the captured turn is a half answer.
+    The plugin cannot resume it: the relay admits exactly one upstream request per spawn, and native's
+    documented resume (append the assistant turn unchanged and ask again) is answered
+    HERMES_MODEL_ADMISSION_CONSUMED and never forwarded. So the turn raises ``ClaudeAPIError`` with a
+    transient 503 naming pause_turn, letting Hermes retry or fall back instead of treating the text
+    before the advisor call as final.
     """
     pause = advisor_events(stop_reason='pause_turn', advisor_result=False, tool_use=False)
     peer, thread, received = start_peer(pause)
     client = make_client(tmp_path, peer, resume=True)
     try:
-        result = client.create(model='sonnet', messages=[{'role': 'user', 'content': 'Consult.'}], tools=TOOLS)
-        choice = result.choices[0]
-        assert choice.message.content == TEXT_BEFORE
-        assert choice.message.tool_calls is None
-        assert choice.finish_reason == 'stop'
-        assert result.usage.native_admission.upstream_requests == 1
-        assert result.usage.native_admission.blocked_requests == 1
-        # The denied resume never reached the fake upstream: only the first request was served.
-        assert len(received) == 1
+        with pytest.raises(directsdk.ClaudeAPIError) as raised:
+            client.create(model='sonnet', messages=[{'role': 'user', 'content': 'Consult.'}], tools=TOOLS)
     finally:
         client.close()
         stop_peer(peer, thread)
+    assert raised.value.status_code == 503
+    assert 'pause_turn' in str(raised.value)
+    # The denied resume never reached the fake upstream: only the first request was served.
+    assert len(received) == 1
+
+
+def test_the_relay_streams_tool_input_but_never_asks_for_an_advisor_stream(tmp_path):
+    """The relay adds eager_input_streaming to ordinary tools only; a server tool must go out untouched."""
+    peer, thread, received = start_peer(advisor_events())
+    client = make_client(tmp_path, peer, tools=RELAY_TOOLS)
+    try:
+        client.create(model='sonnet', messages=[{'role': 'user', 'content': 'Consult and write.'}], tools=TOOLS)
+    finally:
+        client.close()
+        stop_peer(peer, thread)
+    (forwarded,) = received
+    tools = forwarded['tools']
+    # The MCP/custom tool has no ``type`` key and still gets the streaming flag.
+    assert tools[0]['eager_input_streaming'] is True
+    # A server tool is not a tool whose arguments the model streams; the relay must not invent the flag.
+    assert 'eager_input_streaming' not in tools[ADVISOR_TOOL_INDEX]
+
+
+def test_stream_tool_input_flags_custom_tools_but_leaves_server_tools_alone():
+    out = json.loads(stream_tool_input(json.dumps({'model': 'sonnet', 'tools': RELAY_TOOLS,
+                                                    'messages': []}).encode()))
+    tools = out['tools']
+    assert tools[0]['eager_input_streaming'] is True  # MCP/custom, no type key
+    assert 'eager_input_streaming' not in tools[ADVISOR_TOOL_INDEX]  # the advisor server tool
+    assert tools[2]['eager_input_streaming'] is True  # a declared custom tool

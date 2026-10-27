@@ -389,10 +389,12 @@ def stream_tool_input(payload):
     Native turns fine-grained tool streaming on only for a first-party base URL, so behind this relay its
     tools go out without the flag and the API holds a large argument (a whole file in one ``write_file``)
     until it is complete. Hermes' stall detector then sees minutes of silence and cancels a healthy call.
-    A value native already set wins, and a payload with no tools or that does not parse forwards as is."""
+    A value native already set wins, and a payload with no tools or that does not parse forwards as is.
+    Only custom tools (missing or ``custom`` type) are tagged, since the API rejects extra fields on server tools."""
     try:
         body = json.loads(payload)
-        tools = [t for t in body.get('tools') or () if isinstance(t, dict) and 'eager_input_streaming' not in t]
+        tools = [t for t in body.get('tools') or ()
+                 if isinstance(t, dict) and t.get('type') in (None, 'custom') and 'eager_input_streaming' not in t]
         if not tools:
             return payload
         for tool in tools:

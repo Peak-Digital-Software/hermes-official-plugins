@@ -1,16 +1,12 @@
 # Changelog
 
-## [0.3.4] - Unreleased
-
-### Added
-
-- Per-profile `advisor_model` setting passes an alias or model ID to Claude Code as `--advisor` on native turns, while Hermes' auxiliary titles and summaries stay advisor-free.
-
 ## [0.3.1] - Unreleased
 
 ### Added
 
 - Per-profile `claude_config_dir` setting selects the Claude login for every native spawn in a multiplexed gateway (#34).
+- Per-profile `advisor_model` setting passes an alias or model ID to Claude Code as `--advisor` on native turns, while Hermes' auxiliary titles and summaries stay advisor-free.
+- A turn that comes back paused (`stop_reason: pause_turn`) now fails as a retryable 503 instead of returning its partial text as final, since the relay admits one upstream request per turn and the advisor/server-tool turn cannot resume.
 
 ### Fixed
 
