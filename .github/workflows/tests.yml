@@ -87,3 +87,12 @@ jobs:
           HERMES_AGENT_REPO: ${{ github.workspace }}/hermes-agent
           PYTHONPATH: ${{ github.workspace }}/hermes-agent
         run: bash evals/ci.sh
+
+  # ci: the org ruleset requires one check named `ci`; it passes only when discovery and every pytest leg passed.
+  ci:
+    name: ci
+    needs: [discover, pytest]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: test "${{ needs.discover.result }}" = success && test "${{ needs.pytest.result }}" = success
